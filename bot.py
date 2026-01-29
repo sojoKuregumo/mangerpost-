@@ -126,9 +126,9 @@ async def queue_watcher():
                     print(f"🆕 Creating NEW post for {anime_name}", flush=True)
                     caption = (
                         f"**{anime_name}**\n\n"
-                        f"**🎭 Genres:** {job['genres']}\n"
-                        f"**⭐ Score:** {job['score']}  |  **Type:** {job['type']}\n"
-                        f"**📖 Synopsis:**\n__{job['synopsis']}__\n\n"
+                        f"**🎭 Genres:** {job.get('genres', 'Anime')}\n"
+                        f"**⭐ Score:** {job.get('score', 'N/A')}  |  **Type:** {job.get('type', 'TV')}\n"  # <--- FIXED HERE
+                        f"**📖 Synopsis:**\n__{job.get('synopsis', 'No synopsis')}__\n\n"
                         f"**Join:** @YourChannelLink"
                     )
                     keyboard = InlineKeyboardMarkup([[new_button]])
