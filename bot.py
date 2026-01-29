@@ -4,29 +4,26 @@ import logging
 import pymongo
 import base64
 from aiohttp import web
-from pyrogram import Client, filters, enums, idle  # <--- ADDED 'idle' HERE
+from pyrogram import Client, filters, enums, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
-# --- CONFIGURATION (Loaded from Environment) ---
+# --- CONFIGURATION ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
     MAIN_CHANNEL_ID = int(os.environ.get("MAIN_CHANNEL_ID")) 
     DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID"))   
-
     MONGO_URL = os.environ.get("MONGO_URL")
     
     if not all([API_ID, API_HASH, BOT_TOKEN, MAIN_CHANNEL_ID, DB_CHANNEL_ID, MONGO_URL]):
         raise ValueError("Missing Variables")
-
 except Exception as e:
-    print(f"❌ Config Error: {e}")
+    print(f"❌ Config Error: {e}", flush=True)
     raise SystemExit
 
-# --- DATABASE CONNECTION ---
+# --- DATABASE ---
 mongo_client = pymongo.MongoClient(MONGO_URL)
 db = mongo_client["TitanFactoryBot"]
 post_queue = db["post_queue"]     
@@ -70,17 +67,22 @@ def str_to_b64(text):
 def b64_to_str(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode()
 
-# --- BACKGROUND WORKER ---
+# --- WATCHER ---
 async def queue_watcher():
-    print("👀 Watcher Started...")
+    print("👀 Watcher Started... Waiting for jobs.", flush=True)
+    
+    # 🔍 DIAGNOSTIC: Check if items exist right now
+    pending_count = post_queue.count_documents({"status": "pending_post"})
+    print(f"📊 DEBUG: Pending Jobs in DB right now: {pending_count}", flush=True)
+
     while True:
         job = post_queue.find_one({"status": "pending_post"})
         if job:
+            print(f"⚡ Found Job: {job.get('anime')} ({job.get('resolution')}p)", flush=True)
             try:
                 anime_name = job["anime"]
                 res = job["resolution"]
                 file_ids = job["file_ids"]
-                print(f"⚡ Processing: {anime_name} [{res}p]")
 
                 payload_raw = f"get-{encode_ids(file_ids)}"
                 payload_hash = str_to_b64(payload_raw)
@@ -91,8 +93,10 @@ async def queue_watcher():
                 new_button = InlineKeyboardButton(f"{res}p", url=link)
 
                 if existing_post:
+                    print(f"✏️ Editing existing post for {anime_name}", flush=True)
                     msg_id = existing_post["message_id"]
                     current_markup = existing_post.get("buttons", [])
+                    
                     exists = False
                     for row in current_markup:
                         for btn in row:
@@ -115,10 +119,11 @@ async def queue_watcher():
                         try:
                             await app.edit_message_reply_markup(MAIN_CHANNEL_ID, msg_id, reply_markup=InlineKeyboardMarkup(final_kb))
                             active_posts.update_one({"_id": existing_post["_id"]}, {"$set": {"buttons": current_markup}})
-                            print("✅ Post Updated.")
+                            print("✅ Post Updated Successfully.", flush=True)
                         except Exception as e:
-                            print(f"⚠️ Edit Failed: {e}")
+                            print(f"⚠️ Edit Failed: {e}", flush=True)
                 else:
+                    print(f"🆕 Creating NEW post for {anime_name}", flush=True)
                     caption = (
                         f"**{anime_name}**\n\n"
                         f"**🎭 Genres:** {job['genres']}\n"
@@ -138,18 +143,18 @@ async def queue_watcher():
                             "message_id": sent.id,
                             "buttons": [[dict(text=f"{res}p", url=link)]]
                         })
-                        print("✅ New Post Created.")
+                        print("✅ New Post Created Successfully.", flush=True)
                     except Exception as e:
-                        print(f"❌ Post Failed: {e}")
+                        print(f"❌ Post Failed (Check Permissions/ID): {e}", flush=True)
 
                 post_queue.update_one({"_id": job["_id"]}, {"$set": {"status": "done"}})
             except Exception as e:
-                print(f"❌ Worker Error: {e}")
+                print(f"❌ CRITICAL Worker Error: {e}", flush=True)
                 post_queue.update_one({"_id": job["_id"]}, {"$set": {"status": "error", "error": str(e)}})
         
         await asyncio.sleep(5)
 
-# --- USER BOT LOGIC ---
+# --- USER BOT ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     if len(message.command) < 2: return await message.reply("Bot Online.")
@@ -168,11 +173,9 @@ async def start_handler(client, message):
                 except: pass
     except Exception as e: await message.reply(f"❌ Error: {e}")
 
-# --- WEB SERVER (For Render Health Check) ---
+# --- WEB SERVER ---
 async def web_server():
-    async def handle(request):
-        return web.Response(text="Bot is Alive")
-
+    async def handle(request): return web.Response(text="Bot Alive")
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -180,16 +183,13 @@ async def web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"🌐 Web Server started on port {port}")
+    print(f"🌐 Web Server on {port}", flush=True)
 
-# --- START ---
 if __name__ == "__main__":
     app.start()
-    print("🤖 Render Bot Online.")
-    
+    print("🤖 Render Bot Online. Starting loops...", flush=True)
     loop = asyncio.get_event_loop()
     loop.create_task(queue_watcher())
     loop.create_task(web_server())
-    
-    idle() # This keeps the program running
+    idle()
     app.stop()
