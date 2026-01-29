@@ -6,14 +6,14 @@ import base64
 from aiohttp import web
 from pyrogram import Client, filters, enums, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, MessageIdInvalid, MessageNotModified
 
 # --- CONFIGURATION ---
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
     
-    # 🌟 KEY CHANGE: We prefer Session String over Token now
+    # Try Session String first (Best for fixing Peer ID errors)
     SESSION_STRING = os.environ.get("SESSION_STRING", "")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -29,12 +29,12 @@ db = mongo_client["TitanFactoryBot"]
 post_queue = db["post_queue"]     
 active_posts = db["active_posts"] 
 
-# 🌟 CONNECT USING SESSION STRING (Permanent Memory)
+# --- CLIENT STARTUP ---
 if SESSION_STRING:
-    print("✅ Found Session String! Logging in as Admin...", flush=True)
+    print("✅ Using Session String", flush=True)
     app = Client("render_manager", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 else:
-    print("⚠️ No Session String found. Falling back to Token (May cause Peer ID errors).", flush=True)
+    print("⚠️ Using Bot Token", flush=True)
     app = Client("render_manager", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- HELPERS ---
@@ -73,13 +73,48 @@ def str_to_b64(text):
 def b64_to_str(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode()
 
+async def delete_after_delay(messages, delay):
+    await asyncio.sleep(delay)
+    try:
+        await app.delete_messages(messages[0].chat.id, [m.id for m in messages])
+    except: pass
+
+# --- POST CREATOR (Reusable) ---
+async def create_new_post(job, button):
+    caption = (
+        f"**{job['anime']}**\n\n"
+        f"**🎭 Genres:** {job.get('genres', 'Anime')}\n"
+        f"**⭐ Score:** {job.get('score', 'N/A')}  |  **Type:** {job.get('type', 'TV')}\n"
+        f"**📖 Synopsis:**\n__{job.get('synopsis', 'No synopsis')}__\n\n"
+        f"💬 **Group Chat:** [Click Here to Join](https://t.me/+-TQRrH3dEqVmNTg1)\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
+    keyboard = InlineKeyboardMarkup([[button]])
+    try:
+        if job['poster']:
+            sent = await app.send_photo(MAIN_CHANNEL_ID, job['poster'], caption=caption, reply_markup=keyboard)
+        else:
+            sent = await app.send_message(MAIN_CHANNEL_ID, caption, reply_markup=keyboard)
+        
+        # Save to DB so we can edit it later
+        active_posts.insert_one({
+            "anime": job['anime'],
+            "message_id": sent.id,
+            "buttons": [[dict(text=button.text, url=button.url)]]
+        })
+        print("✅ New Post Created Successfully.", flush=True)
+        return True
+    except Exception as e:
+        print(f"❌ Post Failed: {e}", flush=True)
+        return False
+
 # --- WATCHER ---
 async def queue_watcher():
     print("👀 Watcher Started... Waiting for jobs.", flush=True)
     while True:
         job = post_queue.find_one({"status": "pending_post"})
         if job:
-            print(f"⚡ Found Job: {job.get('anime')} ({job.get('resolution')}p)", flush=True)
+            print(f"⚡ Processing: {job.get('anime')} ({job.get('resolution')}p)", flush=True)
             try:
                 anime_name = job["anime"]
                 res = job["resolution"]
@@ -90,14 +125,15 @@ async def queue_watcher():
                 bot_username = app.me.username
                 link = f"https://t.me/{bot_username}?start={payload_hash}"
                 
-                existing_post = active_posts.find_one({"anime": anime_name})
                 new_button = InlineKeyboardButton(f"{res}p", url=link)
+                existing_post = active_posts.find_one({"anime": anime_name})
 
                 if existing_post:
-                    print(f"✏️ Editing existing post for {anime_name}", flush=True)
+                    print(f"✏️ Updating post for {anime_name}", flush=True)
                     msg_id = existing_post["message_id"]
                     current_markup = existing_post.get("buttons", [])
                     
+                    # Add button if not exists
                     exists = False
                     for row in current_markup:
                         for btn in row:
@@ -107,6 +143,7 @@ async def queue_watcher():
                         if not current_markup: current_markup = [[new_button]]
                         else: current_markup[0].append(dict(text=f"{res}p", url=link))
                         
+                        # Sort buttons (360p, 720p, 1080p)
                         def sort_key(b):
                             t = b['text'].replace("p", "")
                             return int(t) if t.isdigit() else 9999
@@ -118,39 +155,26 @@ async def queue_watcher():
                             final_kb.append(r)
 
                         try:
+                            # 🛡️ SELF-HEALING EDIT
                             await app.edit_message_reply_markup(MAIN_CHANNEL_ID, msg_id, reply_markup=InlineKeyboardMarkup(final_kb))
                             active_posts.update_one({"_id": existing_post["_id"]}, {"$set": {"buttons": current_markup}})
-                            print("✅ Post Updated Successfully.", flush=True)
+                            print("✅ Post Updated.", flush=True)
+                            
+                        except (MessageIdInvalid, MessageNotModified) as e:
+                            # 🚑 HEALING LOGIC: If edit fails, delete bad DB entry and Make New Post
+                            print(f"⚠️ Edit Failed (Post deleted?): {e}. Creating NEW post instead.", flush=True)
+                            active_posts.delete_one({"_id": existing_post["_id"]})
+                            await create_new_post(job, new_button)
                         except Exception as e:
-                            print(f"⚠️ Edit Failed: {e}", flush=True)
+                             print(f"⚠️ Unexpected Edit Error: {e}", flush=True)
                 else:
-                    print(f"🆕 Creating NEW post for {anime_name}", flush=True)
-                    caption = (
-                        f"**{anime_name}**\n\n"
-                        f"**🎭 Genres:** {job.get('genres', 'Anime')}\n"
-                        f"**⭐ Score:** {job.get('score', 'N/A')}  |  **Type:** {job.get('type', 'TV')}\n"
-                        f"**📖 Synopsis:**\n__{job.get('synopsis', 'No synopsis')}__\n\n"
-                        f"**Join:** @YourChannelLink"
-                    )
-                    keyboard = InlineKeyboardMarkup([[new_button]])
-                    try:
-                        if job['poster']:
-                            sent = await app.send_photo(MAIN_CHANNEL_ID, job['poster'], caption=caption, reply_markup=keyboard)
-                        else:
-                            sent = await app.send_message(MAIN_CHANNEL_ID, caption, reply_markup=keyboard)
-                        
-                        active_posts.insert_one({
-                            "anime": anime_name,
-                            "message_id": sent.id,
-                            "buttons": [[dict(text=f"{res}p", url=link)]]
-                        })
-                        print("✅ New Post Created Successfully.", flush=True)
-                    except Exception as e:
-                        print(f"❌ Post Failed: {e}", flush=True)
+                    # No existing post, create fresh
+                    print(f"🆕 Creating First Post for {anime_name}", flush=True)
+                    await create_new_post(job, new_button)
 
                 post_queue.update_one({"_id": job["_id"]}, {"$set": {"status": "done"}})
             except Exception as e:
-                print(f"❌ CRITICAL Worker Error: {e}", flush=True)
+                print(f"❌ Worker Error: {e}", flush=True)
                 post_queue.update_one({"_id": job["_id"]}, {"$set": {"status": "error", "error": str(e)}})
         
         await asyncio.sleep(5)
@@ -168,10 +192,25 @@ async def start_handler(client, message):
             msgs = await decode_ids(client, code)
             if not msgs: return await status.edit("❌ Files removed.")
             await status.delete()
+            
+            sent_msgs = []
             for m in msgs:
-                try: await m.copy(message.chat.id, caption=m.caption, protect_content=False)
-                except FloodWait as e: await asyncio.sleep(e.value); await m.copy(message.chat.id, caption=m.caption)
+                try: 
+                    sent = await m.copy(message.chat.id, caption=m.caption, protect_content=False)
+                    sent_msgs.append(sent)
+                except FloodWait as e: 
+                    await asyncio.sleep(e.value)
+                    sent = await m.copy(message.chat.id, caption=m.caption)
+                    sent_msgs.append(sent)
                 except: pass
+            
+            # 🕒 AUTO DELETE NOTIFICATION
+            if sent_msgs:
+                warning = await message.reply(f"⚠️ **Note:** These files will be auto-deleted in **10 Minutes** to prevent copyright strikes.\n\nPlease forward them to your Saved Messages now!")
+                sent_msgs.append(warning)
+                # Launch background timer
+                asyncio.create_task(delete_after_delay(sent_msgs, 600)) # 600 seconds = 10 mins
+
     except Exception as e: await message.reply(f"❌ Error: {e}")
 
 # --- WEB SERVER ---
@@ -188,7 +227,7 @@ async def web_server():
 
 if __name__ == "__main__":
     app.start()
-    print("🤖 Render Bot Online. Starting loops...", flush=True)
+    print("🤖 Render Bot Online. Loops Started.", flush=True)
     loop = asyncio.get_event_loop()
     loop.create_task(queue_watcher())
     loop.create_task(web_server())
