@@ -67,11 +67,32 @@ def str_to_b64(text):
 def b64_to_str(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode()
 
+# --- 🚀 AUTOMATIC KICKSTART (THE FIX) ---
+async def kickstart_channels():
+    print("🔄 Kickstarting Channel Connections...", flush=True)
+    channels = [("Main Channel", MAIN_CHANNEL_ID), ("DB Channel", DB_CHANNEL_ID)]
+    
+    for name, chat_id in channels:
+        try:
+            # 1. Force Fetch Chat
+            chat = await app.get_chat(chat_id)
+            print(f"✅ Found {name}: {chat.title} (ID: {chat.id})", flush=True)
+            
+            # 2. Force Send & Delete (Wakes up the bot's permission cache)
+            msg = await app.send_message(chat_id, "👻 Connection Test (Deleting...)")
+            await asyncio.sleep(1)
+            await msg.delete()
+            print(f"✅ Write Access Confirmed for {name}", flush=True)
+            
+        except Exception as e:
+            print(f"⚠️ Failed to connect to {name} (ID: {chat_id}): {e}", flush=True)
+            print("   -> 🛑 ACTION REQUIRED: Check if Bot is Admin or if ID is correct.", flush=True)
+
 # --- WATCHER ---
 async def queue_watcher():
     print("👀 Watcher Started... Waiting for jobs.", flush=True)
     
-    # 🔍 DIAGNOSTIC: Check if items exist right now
+    # 🔍 DIAGNOSTIC
     pending_count = post_queue.count_documents({"status": "pending_post"})
     print(f"📊 DEBUG: Pending Jobs in DB right now: {pending_count}", flush=True)
 
@@ -127,7 +148,7 @@ async def queue_watcher():
                     caption = (
                         f"**{anime_name}**\n\n"
                         f"**🎭 Genres:** {job.get('genres', 'Anime')}\n"
-                        f"**⭐ Score:** {job.get('score', 'N/A')}  |  **Type:** {job.get('type', 'TV')}\n"  # <--- FIXED HERE
+                        f"**⭐ Score:** {job.get('score', 'N/A')}  |  **Type:** {job.get('type', 'TV')}\n"
                         f"**📖 Synopsis:**\n__{job.get('synopsis', 'No synopsis')}__\n\n"
                         f"**Join:** @YourChannelLink"
                     )
@@ -189,6 +210,10 @@ if __name__ == "__main__":
     app.start()
     print("🤖 Render Bot Online. Starting loops...", flush=True)
     loop = asyncio.get_event_loop()
+    
+    # 🌟 RUN KICKSTART FIRST (As a task)
+    loop.create_task(kickstart_channels())
+    
     loop.create_task(queue_watcher())
     loop.create_task(web_server())
     idle()
