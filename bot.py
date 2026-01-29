@@ -12,24 +12,30 @@ from pyrogram.errors import FloodWait
 try:
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
+    
+    # 🌟 KEY CHANGE: We prefer Session String over Token now
+    SESSION_STRING = os.environ.get("SESSION_STRING", "")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
     MAIN_CHANNEL_ID = int(os.environ.get("MAIN_CHANNEL_ID")) 
     DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID"))   
     MONGO_URL = os.environ.get("MONGO_URL")
-    
-    if not all([API_ID, API_HASH, BOT_TOKEN, MAIN_CHANNEL_ID, DB_CHANNEL_ID, MONGO_URL]):
-        raise ValueError("Missing Variables")
 except Exception as e:
     print(f"❌ Config Error: {e}", flush=True)
     raise SystemExit
 
-# --- DATABASE ---
 mongo_client = pymongo.MongoClient(MONGO_URL)
 db = mongo_client["TitanFactoryBot"]
 post_queue = db["post_queue"]     
 active_posts = db["active_posts"] 
 
-app = Client("render_manager", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# 🌟 CONNECT USING SESSION STRING (Permanent Memory)
+if SESSION_STRING:
+    print("✅ Found Session String! Logging in as Admin...", flush=True)
+    app = Client("render_manager", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+else:
+    print("⚠️ No Session String found. Falling back to Token (May cause Peer ID errors).", flush=True)
+    app = Client("render_manager", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- HELPERS ---
 def encode_ids(file_ids):
@@ -67,35 +73,9 @@ def str_to_b64(text):
 def b64_to_str(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode()
 
-# --- 🚀 AUTOMATIC KICKSTART (THE FIX) ---
-async def kickstart_channels():
-    print("🔄 Kickstarting Channel Connections...", flush=True)
-    channels = [("Main Channel", MAIN_CHANNEL_ID), ("DB Channel", DB_CHANNEL_ID)]
-    
-    for name, chat_id in channels:
-        try:
-            # 1. Force Fetch Chat
-            chat = await app.get_chat(chat_id)
-            print(f"✅ Found {name}: {chat.title} (ID: {chat.id})", flush=True)
-            
-            # 2. Force Send & Delete (Wakes up the bot's permission cache)
-            msg = await app.send_message(chat_id, "👻 Connection Test (Deleting...)")
-            await asyncio.sleep(1)
-            await msg.delete()
-            print(f"✅ Write Access Confirmed for {name}", flush=True)
-            
-        except Exception as e:
-            print(f"⚠️ Failed to connect to {name} (ID: {chat_id}): {e}", flush=True)
-            print("   -> 🛑 ACTION REQUIRED: Check if Bot is Admin or if ID is correct.", flush=True)
-
 # --- WATCHER ---
 async def queue_watcher():
     print("👀 Watcher Started... Waiting for jobs.", flush=True)
-    
-    # 🔍 DIAGNOSTIC
-    pending_count = post_queue.count_documents({"status": "pending_post"})
-    print(f"📊 DEBUG: Pending Jobs in DB right now: {pending_count}", flush=True)
-
     while True:
         job = post_queue.find_one({"status": "pending_post"})
         if job:
@@ -166,7 +146,7 @@ async def queue_watcher():
                         })
                         print("✅ New Post Created Successfully.", flush=True)
                     except Exception as e:
-                        print(f"❌ Post Failed (Check Permissions/ID): {e}", flush=True)
+                        print(f"❌ Post Failed: {e}", flush=True)
 
                 post_queue.update_one({"_id": job["_id"]}, {"$set": {"status": "done"}})
             except Exception as e:
@@ -210,10 +190,6 @@ if __name__ == "__main__":
     app.start()
     print("🤖 Render Bot Online. Starting loops...", flush=True)
     loop = asyncio.get_event_loop()
-    
-    # 🌟 RUN KICKSTART FIRST (As a task)
-    loop.create_task(kickstart_channels())
-    
     loop.create_task(queue_watcher())
     loop.create_task(web_server())
     idle()
