@@ -4,31 +4,26 @@ import logging
 import pymongo
 import base64
 from aiohttp import web
-from pyrogram import Client, filters, enums
+from pyrogram import Client, filters, enums, idle  # <--- ADDED 'idle' HERE
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 # --- CONFIGURATION (Loaded from Environment) ---
 try:
-    # We fetch these from the Server's Environment Settings
     API_ID = int(os.environ.get("API_ID"))
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-    # Channel IDs (Convert to integer)
     MAIN_CHANNEL_ID = int(os.environ.get("MAIN_CHANNEL_ID")) 
     DB_CHANNEL_ID = int(os.environ.get("DB_CHANNEL_ID"))   
 
-    # MongoDB
     MONGO_URL = os.environ.get("MONGO_URL")
     
-    # Verification
     if not all([API_ID, API_HASH, BOT_TOKEN, MAIN_CHANNEL_ID, DB_CHANNEL_ID, MONGO_URL]):
         raise ValueError("Missing Variables")
 
 except Exception as e:
     print(f"❌ Config Error: {e}")
-    print("⚠️ Please set API_ID, API_HASH, BOT_TOKEN, MAIN_CHANNEL_ID, DB_CHANNEL_ID, and MONGO_URL in Render Environment.")
     raise SystemExit
 
 # --- DATABASE CONNECTION ---
@@ -173,9 +168,11 @@ async def start_handler(client, message):
                 except: pass
     except Exception as e: await message.reply(f"❌ Error: {e}")
 
-# --- WEB SERVER ---
+# --- WEB SERVER (For Render Health Check) ---
 async def web_server():
-    async def handle(request): return web.Response(text="Bot Alive")
+    async def handle(request):
+        return web.Response(text="Bot is Alive")
+
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
@@ -183,14 +180,16 @@ async def web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"🌐 Web Server on {port}")
+    print(f"🌐 Web Server started on port {port}")
 
 # --- START ---
 if __name__ == "__main__":
     app.start()
     print("🤖 Render Bot Online.")
+    
     loop = asyncio.get_event_loop()
     loop.create_task(queue_watcher())
     loop.create_task(web_server())
-    idle()
+    
+    idle() # This keeps the program running
     app.stop()
